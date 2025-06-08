@@ -14,6 +14,8 @@ using UnityEngine;
 [DefaultExecutionOrder(-1)]
 public class PipeServer : MonoBehaviour
 {
+    private string latestControlMessage = "";
+
     public bool useLegacyPipes = false; // True to use NamedPipes for interprocess communication (not supported on Linux)
     public string host = "127.0.0.1"; // This machines host.
     public int port = 52733; // Must match the Python side.
@@ -40,6 +42,12 @@ public class PipeServer : MonoBehaviour
     private Transform virtualNeck;
     private Transform virtualHip;
 
+    public string GetLatestMessage()
+    {
+        string temp = latestControlMessage;
+        latestControlMessage = ""; // 다음 프레임에서 중복 호출 방지
+        return temp;
+    }
     public Transform GetLandmark(Landmark mark)
     {
         return body.instances[(int)mark].transform ;
@@ -143,10 +151,18 @@ public class PipeServer : MonoBehaviour
                 string[] lines = str.Split('\n');
                 foreach (string l in lines)
                 {
-                    if (string.IsNullOrWhiteSpace(l))
+                    if (string.IsNullOrWhiteSpace(l)) continue;
+
+                    //  제어 메시지: CREATE_SHIELD, CREATE_SPHERES 등
+                    if (!l.Contains("|"))
+                    {
+                        latestControlMessage = l.Trim(); // 저장하고 continue
                         continue;
+                    }
+
                     string[] s = l.Split('|');
                     if (s.Length < 4) continue;
+
                     int i;
                     if (!int.TryParse(s[0], out i)) continue;
                     h.positionsBuffer[i].value += new Vector3(float.Parse(s[1]), float.Parse(s[2]), float.Parse(s[3]));

@@ -19,7 +19,7 @@ class CaptureThread(threading.Thread):
     counter = 0
     timer = 0.0
     def run(self):
-        self.cap = cv2.VideoCapture(global_vars.CAM_INDEX) # sometimes it can take a while for certain video captures
+        self.cap = cv2.VideoCapture(global_vars.CAM_INDEX)
         if global_vars.USE_CUSTOM_CAM_SETTINGS:
             self.cap.set(cv2.CAP_PROP_FPS, global_vars.FPS)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,global_vars.WIDTH)
@@ -38,8 +38,7 @@ class CaptureThread(threading.Thread):
                     self.counter = 0
                     self.timer = time.time()
 
-# the body thread actually does the 
-# processing of the captured images, and communication with unity
+# the body thread actually does the processing of the captured images, and communication with unity
 class BodyThread(threading.Thread):
     data = ""
     dirty = True
@@ -70,7 +69,6 @@ class BodyThread(threading.Thread):
                 ret = capture.ret
                 image = capture.frame
                                 
-                # Image transformations and stuff
                 image = cv2.flip(image, 1)
                 image.flags.writeable = global_vars.DEBUG
                 
@@ -96,9 +94,12 @@ class BodyThread(threading.Thread):
                 self.data = ""
                 i = 0
                 if results.pose_world_landmarks:
-                    hand_world_landmarks = results.pose_world_landmarks
+                    hand_world_landmarks = results.pose_world_landmarks.landmark
                     for i in range(0,33):
-                        self.data += "{}|{}|{}|{}\n".format(i,hand_world_landmarks.landmark[i].x,hand_world_landmarks.landmark[i].y,hand_world_landmarks.landmark[i].z)
+                        self.data += "{}|{}|{}|{}\n".format(i,hand_world_landmarks[i].x,hand_world_landmarks[i].y,hand_world_landmarks[i].z)
+
+                    # 🟢 추가: 포즈 감지 및 Unity로 메시지 전송
+                    self.detect_pose(hand_world_landmarks)
 
                 self.send_data(self.data)
                     
@@ -120,7 +121,6 @@ class BodyThread(threading.Thread):
             self.client.sendMessage(message)
             pass
         else:
-            # Maintain pipe connection.
             if self.pipe==None and time.time()-self.timeSinceCheckedConnection>=1:
                 try:
                     self.pipe = open(r'\\.\pipe\UnityMediaPipeBody1', 'r+b', 0)
@@ -138,4 +138,27 @@ class BodyThread(threading.Thread):
                     print("Failed to write to pipe. Is the unity project open?")
                     self.pipe= None
         pass
-                        
+
+    # 🟢 추가: 제스처 감지 함수
+    def detect_pose(self, landmarks):
+        try:
+            lw = landmarks[16]  # LEFT_WRIST
+            rw = landmarks[15]  # RIGHT_WRIST
+            ls = landmarks[12]  # LEFT_SHOULDER
+            rs = landmarks[11]  # RIGHT_SHOULDER
+            nose = landmarks[0] # NOSE
+
+            # 팔 X자: 왼손이 오른쪽 어깨 근처 + 오른손이 왼쪽 어깨 근처
+            x_pose = abs(lw.x - rs.x) < 0.15 and abs(rw.x - ls.x) < 0.15
+
+            # 만세: 양손이 코보다 위
+            hands_up = lw.y < nose.y and rw.y < nose.y
+
+            if x_pose:
+                print("Detected X Pose → 방패 생성")
+                self.client.sendMessage("CREATE_SHIELD")
+            elif hands_up:
+                print("Detected Hands Up → 구 3개 생성")
+                self.client.sendMessage("CREATE_SPHERES")
+        except Exception as e:
+            print("Pose detection error:", e)
