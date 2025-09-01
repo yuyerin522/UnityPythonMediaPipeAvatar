@@ -10,7 +10,7 @@ import time
 import global_vars 
 import struct
 
-# the capture thread captures images from the WebCam on a separate thread (for performance)
+# 카메라 캡처 스레드
 class CaptureThread(threading.Thread):
     cap = None
     ret = None
@@ -38,13 +38,23 @@ class CaptureThread(threading.Thread):
                     self.counter = 0
                     self.timer = time.time()
 
-# the body thread actually does the processing of the captured images, and communication with unity
+# Mediapipe 포즈 처리 + Unity와 통신
 class BodyThread(threading.Thread):
     data = ""
     dirty = True
     pipe = None
     timeSinceCheckedConnection = 0
     timeSincePostStatistics = 0
+
+    def __init__(self):
+        super().__init__()
+        # 제스처 안정화/쿨다운 파라미터
+        self.min_hold = 0.25   # 같은 포즈가 이 시간 이상 유지되어야 발화
+        self.cooldown = 0.8    # 직전 발화 이후 최소 대기 시간
+        # 상태
+        self.prev_gesture = "NONE"
+        self.stable_since = 0.0
+        self.last_fired_at = 0.0
 
     def run(self):
         mp_drawing = mp.solutions.drawing_utils
@@ -55,7 +65,11 @@ class BodyThread(threading.Thread):
         capture = CaptureThread()
         capture.start()
 
-        with mp_pose.Pose(min_detection_confidence=0.80, min_tracking_confidence=0.5, model_complexity = global_vars.MODEL_COMPLEXITY,static_image_mode = False,enable_segmentation = True) as pose: 
+        with mp_pose.Pose(min_detection_confidence=0.80, 
+                          min_tracking_confidence=0.5, 
+                          model_complexity = global_vars.MODEL_COMPLEXITY,
+                          static_image_mode = False,
+                          enable_segmentation = True) as pose: 
             
             while not global_vars.KILL_THREADS and capture.isRunning==False:
                 print("Waiting for camera and capture thread.")
@@ -65,41 +79,46 @@ class BodyThread(threading.Thread):
             while not global_vars.KILL_THREADS and capture.cap.isOpened():
                 ti = time.time()
 
-                # Fetch stuff from the capture thread
+                # 캡처 스레드에서 프레임 가져오기
                 ret = capture.ret
                 image = capture.frame
                                 
                 image = cv2.flip(image, 1)
                 image.flags.writeable = global_vars.DEBUG
                 
-                # Detections
+                # Mediapipe 처리
                 results = pose.process(image)
                 tf = time.time()
                 
-                # Rendering results
+                # 디버그용 시각화
                 if global_vars.DEBUG:
                     if time.time()-self.timeSincePostStatistics>=1:
                         print("Theoretical Maximum FPS: %f"%(1/(tf-ti)))
                         self.timeSincePostStatistics = time.time()
                         
                     if results.pose_landmarks:
-                        mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS, 
-                                                mp_drawing.DrawingSpec(color=(255, 100, 0), thickness=2, circle_radius=4),
-                                                mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2, circle_radius=2),
-                                                )
+                        mp_drawing.draw_landmarks(
+                            image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS, 
+                            mp_drawing.DrawingSpec(color=(255, 100, 0), thickness=2, circle_radius=4),
+                            mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2, circle_radius=2),
+                        )
                     cv2.imshow('Body Tracking', image)
                     cv2.waitKey(3)
 
-                # Set up data for relay
+                # Unity로 보낼 데이터 구성
                 self.data = ""
-                i = 0
                 if results.pose_world_landmarks:
                     hand_world_landmarks = results.pose_world_landmarks.landmark
                     for i in range(0,33):
-                        self.data += "{}|{}|{}|{}\n".format(i,hand_world_landmarks[i].x,hand_world_landmarks[i].y,hand_world_landmarks[i].z)
+                        self.data += "{}|{}|{}|{}\n".format(
+                            i, hand_world_landmarks[i].x, hand_world_landmarks[i].y, hand_world_landmarks[i].z
+                        )
 
-                    # 🟢 추가: 포즈 감지 및 Unity로 메시지 전송
-                    self.detect_pose(hand_world_landmarks)
+                    # 포즈 감지 → Unity 메시지 전송 (안정화/쿨다운 적용)
+                    try:
+                        self.detect_pose(hand_world_landmarks)
+                    except Exception as e:
+                        print("detect_pose() 호출 중 오류:", e)
 
                 self.send_data(self.data)
                     
@@ -139,26 +158,59 @@ class BodyThread(threading.Thread):
                     self.pipe= None
         pass
 
-    # 🟢 추가: 제스처 감지 함수
+    # 포즈 분류 (우선순위 포함)
+    # 반환: "HANDS_UP" | "ARMS_SIDE" | "X_POSE" | "NONE"
+    def classify_gesture(self, lm):
+        lw = lm[16]  # LEFT_WRIST
+        rw = lm[15]  # RIGHT_WRIST
+        ls = lm[12]  # LEFT_SHOULDER
+        rs = lm[11]  # RIGHT_SHOULDER
+        nose = lm[0] # NOSE
+
+        # 임계값(환경에 맞게 조정 가능)
+        side_gap = 0.20
+        y_tolerance = 0.20
+        x_cross_gap = 0.15
+
+        hands_up = (lw.y < nose.y) and (rw.y < nose.y)
+        arms_side = (lw.x < ls.x - side_gap) and (rw.x > rs.x + side_gap) \
+                    and (abs(lw.y - ls.y) < y_tolerance) and (abs(rw.y - rs.y) < y_tolerance)
+        x_pose = (abs(lw.x - rs.x) < x_cross_gap) and (abs(rw.x - ls.x) < x_cross_gap)
+
+        # 우선순위: X포즈 < 양팔좌우 < 양손위로
+        if hands_up:
+            return "HANDS_UP"
+        if arms_side:
+            return "ARMS_SIDE"
+        if x_pose:
+            return "X_POSE"
+        return "NONE"
+
+    # 제스처 감지(안정화 + 쿨다운 + 단일 발화)
     def detect_pose(self, landmarks):
-        try:
-            lw = landmarks[16]  # LEFT_WRIST
-            rw = landmarks[15]  # RIGHT_WRIST
-            ls = landmarks[12]  # LEFT_SHOULDER
-            rs = landmarks[11]  # RIGHT_SHOULDER
-            nose = landmarks[0] # NOSE
+        now = time.time()
+        g = self.classify_gesture(landmarks)
 
-            # 팔 X자: 왼손이 오른쪽 어깨 근처 + 오른손이 왼쪽 어깨 근처
-            x_pose = abs(lw.x - rs.x) < 0.15 and abs(rw.x - ls.x) < 0.15
+        if g == self.prev_gesture:
+            # 같은 제스처가 유지되는 중
+            if self.stable_since == 0.0:
+                self.stable_since = now
+        else:
+            # 제스처가 바뀜 → 안정화 타이머 리셋
+            self.prev_gesture = g
+            self.stable_since = now if g != "NONE" else 0.0
 
-            # 만세: 양손이 코보다 위
-            hands_up = lw.y < nose.y and rw.y < nose.y
+        # 발화 조건: 유효 제스처 + 최소 유지시간 + 쿨다운 경과
+        if g != "NONE" and self.stable_since > 0.0:
+            if (now - self.stable_since) >= self.min_hold and (now - self.last_fired_at) >= self.cooldown:
+                if g == "HANDS_UP":
+                    print("Detected Hands Up → 거대한 공 생성")
+                    self.client.sendMessage("CREATE_BIGBALL")
+                elif g == "ARMS_SIDE":
+                    print("Detected Arms Side → 달 공격 생성")
+                    self.client.sendMessage("CREATE_MOON")
+                elif g == "X_POSE":
+                    print("Detected X Pose → 방패 생성")
+                    self.client.sendMessage("CREATE_SHIELD")
 
-            if x_pose:
-                print("Detected X Pose → 방패 생성")
-                self.client.sendMessage("CREATE_SHIELD")
-            elif hands_up:
-                print("Detected Hands Up → 구 3개 생성")
-                self.client.sendMessage("CREATE_SPHERES")
-        except Exception as e:
-            print("Pose detection error:", e)
+                self.last_fired_at = now
