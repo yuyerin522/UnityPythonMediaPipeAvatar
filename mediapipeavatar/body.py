@@ -48,7 +48,7 @@ class BodyThread(threading.Thread):
 
     def __init__(self):
         super().__init__()
-        # 제스처 안정화/쿨다운 파라미터
+        # 제스처 안정화/쿨다운(겹침 방지)
         self.min_hold = 0.25   # 같은 포즈가 이 시간 이상 유지되어야 발화
         self.cooldown = 0.8    # 직전 발화 이후 최소 대기 시간
         # 상태
@@ -158,59 +158,71 @@ class BodyThread(threading.Thread):
                     self.pipe= None
         pass
 
-    # 포즈 분류 (우선순위 포함)
-    # 반환: "HANDS_UP" | "ARMS_SIDE" | "X_POSE" | "NONE"
+    # ===============================
+    #           제스처 분류
+    # ===============================
+    # 반환: "BIGBALL" | "SMALLBALLS" | "MOON" | "SHIELD" | "NONE"
     def classify_gesture(self, lm):
-        lw = lm[16]  # LEFT_WRIST
-        rw = lm[15]  # RIGHT_WRIST
-        ls = lm[12]  # LEFT_SHOULDER
-        rs = lm[11]  # RIGHT_SHOULDER
-        nose = lm[0] # NOSE
+        lw = lm[16]; rw = lm[15]
+        ls = lm[12]; rs = lm[11]
+        nose = lm[0]
 
-        # 임계값(환경에 맞게 조정 가능)
-        side_gap = 0.20
-        y_tolerance = 0.20
-        x_cross_gap = 0.15
+        # 튜닝 가능한 임계값(상황에 따라 ±0.03~0.05 조정)
+        BIGBALL_X_GAP   = 0.18  # 두 손목이 이 값보다 가까우면 큰 공(O)
+        SMALLBALL_X_GAP = 0.28  # 이 값보다 멀면 작은 공(넓게)
+        SHOULDER_Y_MARG = 0.05  # 어깨보다 최소 이만큼 위
+        SIDE_GAP        = 0.20  # 달 공격: 좌우 벌림 정도
+        Y_TOL           = 0.20  # 달 공격: 손목 높이가 어깨와 비슷
 
-        hands_up = (lw.y < nose.y) and (rw.y < nose.y)
-        arms_side = (lw.x < ls.x - side_gap) and (rw.x > rs.x + side_gap) \
-                    and (abs(lw.y - ls.y) < y_tolerance) and (abs(rw.y - rs.y) < y_tolerance)
-        x_pose = (abs(lw.x - rs.x) < x_cross_gap) and (abs(rw.x - ls.x) < x_cross_gap)
+        # 편의: 손목 사이 x거리
+        dx = abs(rw.x - lw.x)
+        if global_vars.DEBUG:
+            print(f"dx={dx:.3f}, lw.y={lw.y:.3f}, rw.y={rw.y:.3f}, ls.y={ls.y:.3f}, rs.y={rs.y:.3f}, nose.y={nose.y:.3f}")
 
-        # 우선순위: X포즈 < 양팔좌우 < 양손위로
-        if hands_up:
-            return "HANDS_UP"
-        if arms_side:
-            return "ARMS_SIDE"
-        if x_pose:
-            return "X_POSE"
+        # 큰 공: 머리 위에서 두 손을 가깝게 모음(O)
+        bigball = (lw.y < nose.y - 0.05) and (rw.y < nose.y - 0.05) and (dx < BIGBALL_X_GAP)
+
+        # 작은 공: 두 손을 올렸지만 좌우로 넓게 벌림
+        smallballs = (lw.y < ls.y - SHOULDER_Y_MARG) and (rw.y < rs.y - SHOULDER_Y_MARG) and (dx >= SMALLBALL_X_GAP)
+
+        # 달 공격: 양팔 좌우로 뻗기(어깨 높이 부근)
+        arms_side = (lw.x < ls.x - SIDE_GAP) and (rw.x > rs.x + SIDE_GAP) and \
+                    (abs(lw.y - ls.y) < Y_TOL) and (abs(rw.y - rs.y) < Y_TOL)
+
+        # 방패(X)
+        x_pose = (abs(lw.x - rs.x) < 0.15) and (abs(rw.x - ls.x) < 0.15)
+
+        # 우선순위(겹침 방지)
+        if bigball:    return "BIGBALL"
+        if smallballs: return "SMALLBALLS"
+        if arms_side:  return "MOON"
+        if x_pose:     return "SHIELD"
         return "NONE"
 
-    # 제스처 감지(안정화 + 쿨다운 + 단일 발화)
+    # 안정화 + 쿨다운 + 단일 발화
     def detect_pose(self, landmarks):
         now = time.time()
         g = self.classify_gesture(landmarks)
 
         if g == self.prev_gesture:
-            # 같은 제스처가 유지되는 중
             if self.stable_since == 0.0:
                 self.stable_since = now
         else:
-            # 제스처가 바뀜 → 안정화 타이머 리셋
             self.prev_gesture = g
             self.stable_since = now if g != "NONE" else 0.0
 
-        # 발화 조건: 유효 제스처 + 최소 유지시간 + 쿨다운 경과
         if g != "NONE" and self.stable_since > 0.0:
             if (now - self.stable_since) >= self.min_hold and (now - self.last_fired_at) >= self.cooldown:
-                if g == "HANDS_UP":
-                    print("Detected Hands Up → 거대한 공 생성")
+                if g == "BIGBALL":
+                    print("Detected Hands Up(O) → 거대한 공")
                     self.client.sendMessage("CREATE_BIGBALL")
-                elif g == "ARMS_SIDE":
-                    print("Detected Arms Side → 달 공격 생성")
+                elif g == "SMALLBALLS":
+                    print("Detected Hands Up Wide → 작은 공 3개")
+                    self.client.sendMessage("CREATE_SPHERES")
+                elif g == "MOON":
+                    print("Detected Arms Side → 달 공격")
                     self.client.sendMessage("CREATE_MOON")
-                elif g == "X_POSE":
-                    print("Detected X Pose → 방패 생성")
+                elif g == "SHIELD":
+                    print("Detected X Pose → 방패")
                     self.client.sendMessage("CREATE_SHIELD")
-
                 self.last_fired_at = now
