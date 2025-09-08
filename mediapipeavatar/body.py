@@ -114,7 +114,14 @@ class BodyThread(threading.Thread):
                             i, hand_world_landmarks[i].x, hand_world_landmarks[i].y, hand_world_landmarks[i].z
                         )
 
-                    # 포즈 감지 → Unity 메시지 전송 (안정화/쿨다운 적용)
+                    # [ADDED] 미니게임용: 현재 포즈 라벨을 매 프레임 전송
+                    try:
+                        g = self.classify_gesture(hand_world_landmarks)  # "BIGBALL" | "SMALLBALLS" | "MOON" | "SHIELD" | "NONE"
+                        self.client.sendMessage("POSE_" + g)
+                    except Exception as e:
+                        print("POSE 라벨 전송 중 오류:", e)
+
+                    # 기존: 포즈 안정화/쿨다운 이벤트 발화 (원하면 유지)
                     try:
                         self.detect_pose(hand_world_landmarks)
                     except Exception as e:
@@ -199,7 +206,7 @@ class BodyThread(threading.Thread):
         if x_pose:     return "SHIELD"
         return "NONE"
 
-    # 안정화 + 쿨다운 + 단일 발화
+    # 안정화 + 쿨다운 + 단일 발화 (이벤트 메세지)
     def detect_pose(self, landmarks):
         now = time.time()
         g = self.classify_gesture(landmarks)
