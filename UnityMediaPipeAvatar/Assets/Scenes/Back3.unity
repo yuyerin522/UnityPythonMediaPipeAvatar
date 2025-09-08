@@ -1080,6 +1080,10 @@ PrefabInstance:
       propertyPath: m_Materials.Array.data[0]
       value: 
       objectReference: {fileID: 2100000, guid: 4987862c1c195e74c86994ba4bcbd812, type: 2}
+    - target: {fileID: 9500000, guid: 49f2055d53eeb4e5a92af590a44bddee, type: 3}
+      propertyPath: m_Enabled
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 11400000, guid: 49f2055d53eeb4e5a92af590a44bddee, type: 3}
       propertyPath: radius
       value: 0.3
@@ -1128,6 +1132,14 @@ PrefabInstance:
       propertyPath: radius
       value: 0.2
       objectReference: {fileID: 0}
+    - target: {fileID: 11400110, guid: 49f2055d53eeb4e5a92af590a44bddee, type: 3}
+      propertyPath: m_Enabled
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 11400116, guid: 49f2055d53eeb4e5a92af590a44bddee, type: 3}
+      propertyPath: m_Enabled
+      value: 0
+      objectReference: {fileID: 0}
     m_RemovedComponents:
     - {fileID: 11400042, guid: 49f2055d53eeb4e5a92af590a44bddee, type: 3}
     - {fileID: 11400040, guid: 49f2055d53eeb4e5a92af590a44bddee, type: 3}
@@ -1170,17 +1182,17 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0697c7a65f406574897e879df4a91292, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  previewCamera: {fileID: 0}
   animator: {fileID: 16691388}
   ground:
     serializedVersion: 2
     m_Bits: 0
-  footTracking: 1
-  footGroundOffset: 0.1
-  useCalibrationData: 1
+  autoCalibrateWhenStreamReady: 1
+  useCalibrationData: 0
   calibrationData: {fileID: 11400000, guid: f6d63504f6eba7e4095f0c5ae1186221, type: 2}
+  lockLowerBody: 1
   keepRootGrounded: 0
   rotateRootWithHips: 0
+  footGroundOffset: 0.1
   smoothSpeed: 10
 --- !u!1 &18088714
 GameObject:
@@ -7148,7 +7160,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4188be886d09d8245a103076d2a165de, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  server: {fileID: 0}
+  server: {fileID: 1468629161}
   targetPoseQuad: {fileID: 1366167632}
   resultQuad: {fileID: 604629419}
   poseSideMat: {fileID: 2100000, guid: 77b3fbb345f60d84b8027b7fd95e4db6, type: 2}
@@ -7158,6 +7170,7 @@ MonoBehaviour:
   wrongMat: {fileID: 2100000, guid: a8d1c5adb59e0ea44941b5162db7142c, type: 2}
   holdDuration: 3
   resultDisplaySec: 1.2
+  restBetweenPosesSec: 2
   advanceOnFail: 1
   billboardToCamera: 1
 --- !u!1001 &636324355
