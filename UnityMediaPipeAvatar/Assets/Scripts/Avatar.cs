@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -6,9 +5,7 @@ public class Avatar : MonoBehaviour
 {
     public Camera previewCamera; // OPTIONAL
     public Animator animator;
-    public LayerMask ground;
-    public bool footTracking = true;
-    public float footGroundOffset = .1f;
+
     [Header("Calibration")]
     public bool useCalibrationData = false;
     public PersistentCalibrationData calibrationData;
@@ -19,25 +16,63 @@ public class Avatar : MonoBehaviour
 
     private Quaternion initialRotation;
     private Vector3 initialPosition;
-    private Quaternion targetRot;
 
     private Dictionary<HumanBodyBones, CalibrationData> parentCalibrationData = new Dictionary<HumanBodyBones, CalibrationData>();
-    private CalibrationData spineUpDown, hipsTwist,chest,head;
+    private CalibrationData spineUpDown, chest, head;
+
+    // 하체 고정용 캐시
+    private struct BoneLock
+    {
+        public Transform t;
+        public Vector3 localPos;
+        public Quaternion localRot;
+    }
+    private readonly HumanBodyBones[] lowerBodyBones = new HumanBodyBones[]
+    {
+        HumanBodyBones.Hips,
+        HumanBodyBones.LeftUpperLeg, HumanBodyBones.LeftLowerLeg, HumanBodyBones.LeftFoot, HumanBodyBones.LeftToes,
+        HumanBodyBones.RightUpperLeg, HumanBodyBones.RightLowerLeg, HumanBodyBones.RightFoot, HumanBodyBones.RightToes
+    };
+    private List<BoneLock> lowerLocks = new List<BoneLock>();
 
     private void Start()
     {
         initialRotation = transform.rotation;
         initialPosition = transform.position;
 
-        if (calibrationData && useCalibrationData)
-        {
-            CalibrateFromPersistent();
-        }
-
         server = FindObjectOfType<PipeServer>();
         if (server == null)
         {
             Debug.LogError("You must have a PipeServer in the scene!");
+        }
+
+        // Animator 영향 제거
+        if (animator != null) animator.enabled = false;
+
+        // 하체 뼈 초기 포즈를 저장 (고정용)
+        CacheLowerBodyLocks();
+
+        if (calibrationData && useCalibrationData)
+        {
+            CalibrateFromPersistent();
+        }
+    }
+
+    private void CacheLowerBodyLocks()
+    {
+        lowerLocks.Clear();
+        if (animator == null) return;
+
+        foreach (var hb in lowerBodyBones)
+        {
+            var tf = animator.GetBoneTransform(hb);
+            if (tf == null) continue;
+            lowerLocks.Add(new BoneLock
+            {
+                t = tf,
+                localPos = tf.localPosition,
+                localRot = tf.localRotation
+            });
         }
     }
 
@@ -52,61 +87,53 @@ public class Avatar : MonoBehaviour
                 parentCalibrationData.Add(d.bone, d.data.ReconstructReferences());
             }
             spineUpDown = calibrationData.spineUpDown.ReconstructReferences();
-            hipsTwist = calibrationData.hipsTwist.ReconstructReferences();
             chest = calibrationData.chest.ReconstructReferences();
             head = calibrationData.head.ReconstructReferences();
         }
 
-        animator.enabled = false; // disable animator to stop interference.
         Calibrated = true;
     }
+
     public void Calibrate()
     {
-        // Here we store the values of variables required to do the correct rotations at runtime.
-        print("Calibrating on " + gameObject.name);
+        if (animator == null || server == null)
+        {
+            Debug.LogError("Animator or PipeServer is missing.");
+            return;
+        }
 
         parentCalibrationData.Clear();
 
-        // Manually setting calibration data for the spine chain as we want really specific control over that.
-        spineUpDown = new CalibrationData(animator.transform, animator.GetBoneTransform(HumanBodyBones.Spine), animator.GetBoneTransform(HumanBodyBones.Neck),
+        // 상체만 Calibration (골반/하체 제외)
+        spineUpDown = new CalibrationData(animator.transform,
+            animator.GetBoneTransform(HumanBodyBones.Spine),
+            animator.GetBoneTransform(HumanBodyBones.Neck),
             server.GetVirtualHip(), server.GetVirtualNeck());
-        hipsTwist = new CalibrationData(animator.transform, animator.GetBoneTransform(HumanBodyBones.Hips), animator.GetBoneTransform(HumanBodyBones.Hips),
+
+        chest = new CalibrationData(animator.transform,
+            animator.GetBoneTransform(HumanBodyBones.Chest),
+            animator.GetBoneTransform(HumanBodyBones.Chest),
             server.GetLandmark(Landmark.RIGHT_HIP), server.GetLandmark(Landmark.LEFT_HIP));
-        chest = new CalibrationData(animator.transform, animator.GetBoneTransform(HumanBodyBones.Chest), animator.GetBoneTransform(HumanBodyBones.Chest),
-            server.GetLandmark(Landmark.RIGHT_HIP), server.GetLandmark(Landmark.LEFT_HIP));
-        head = new CalibrationData(animator.transform, animator.GetBoneTransform(HumanBodyBones.Neck), animator.GetBoneTransform(HumanBodyBones.Head),
+
+        head = new CalibrationData(animator.transform,
+            animator.GetBoneTransform(HumanBodyBones.Neck),
+            animator.GetBoneTransform(HumanBodyBones.Head),
             server.GetVirtualNeck(), server.GetLandmark(Landmark.NOSE));
 
-        // Adding calibration data automatically for the rest of the bones.
+        // 팔만 추적
         AddCalibration(HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm,
             server.GetLandmark(Landmark.RIGHT_SHOULDER), server.GetLandmark(Landmark.RIGHT_ELBOW));
         AddCalibration(HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand,
             server.GetLandmark(Landmark.RIGHT_ELBOW), server.GetLandmark(Landmark.RIGHT_WRIST));
-
-        AddCalibration(HumanBodyBones.RightUpperLeg, HumanBodyBones.RightLowerLeg,
-            server.GetLandmark(Landmark.RIGHT_HIP), server.GetLandmark(Landmark.RIGHT_KNEE));
-        AddCalibration(HumanBodyBones.RightLowerLeg, HumanBodyBones.RightFoot,
-            server.GetLandmark(Landmark.RIGHT_KNEE), server.GetLandmark(Landmark.RIGHT_ANKLE));
 
         AddCalibration(HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm,
             server.GetLandmark(Landmark.LEFT_SHOULDER), server.GetLandmark(Landmark.LEFT_ELBOW));
         AddCalibration(HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand,
             server.GetLandmark(Landmark.LEFT_ELBOW), server.GetLandmark(Landmark.LEFT_WRIST));
 
-        AddCalibration(HumanBodyBones.LeftUpperLeg, HumanBodyBones.LeftLowerLeg,
-            server.GetLandmark(Landmark.LEFT_HIP), server.GetLandmark(Landmark.LEFT_KNEE));
-        AddCalibration(HumanBodyBones.LeftLowerLeg, HumanBodyBones.LeftFoot,
-            server.GetLandmark(Landmark.LEFT_KNEE), server.GetLandmark(Landmark.LEFT_ANKLE));
+        // 하체 잠금 정보 갱신
+        CacheLowerBodyLocks();
 
-        if (footTracking)
-        {
-            AddCalibration(HumanBodyBones.LeftFoot, HumanBodyBones.LeftToes,
-                server.GetLandmark(Landmark.LEFT_ANKLE), server.GetLandmark(Landmark.LEFT_FOOT_INDEX));
-            AddCalibration(HumanBodyBones.RightFoot, HumanBodyBones.RightToes,
-                server.GetLandmark(Landmark.RIGHT_ANKLE), server.GetLandmark(Landmark.RIGHT_FOOT_INDEX));
-        }
-
-        animator.enabled = false; // disable animator to stop interference.
         Calibrated = true;
     }
 
@@ -118,7 +145,7 @@ public class Avatar : MonoBehaviour
             return;
         }
 
-        List<PersistentCalibrationData.CalibrationEntry> calibrations = new List<PersistentCalibrationData.CalibrationEntry>();
+        var calibrations = new List<PersistentCalibrationData.CalibrationEntry>();
         foreach (KeyValuePair<HumanBodyBones, CalibrationData> k in parentCalibrationData)
         {
             calibrations.Add(new PersistentCalibrationData.CalibrationEntry() { bone = k.Key, data = k.Value });
@@ -126,15 +153,15 @@ public class Avatar : MonoBehaviour
         calibrationData.parentCalibrationData = calibrations.ToArray();
 
         calibrationData.spineUpDown = spineUpDown;
-        calibrationData.hipsTwist = hipsTwist;
         calibrationData.chest = chest;
         calibrationData.head = head;
 
         calibrationData.Dirty();
 
-        print("Completed storing calibration data "+calibrationData.name);
+        Debug.Log("Completed storing calibration data " + calibrationData.name);
     }
-    private void AddCalibration(HumanBodyBones parent, HumanBodyBones child, Transform trackParent,Transform trackChild)
+
+    private void AddCalibration(HumanBodyBones parent, HumanBodyBones child, Transform trackParent, Transform trackChild)
     {
         parentCalibrationData.Add(parent,
             new CalibrationData(animator.transform, animator.GetBoneTransform(parent), animator.GetBoneTransform(child),
@@ -143,62 +170,40 @@ public class Avatar : MonoBehaviour
 
     private void Update()
     {
-        // Adjust the vertical position of the avatar to keep it approximately grounded.
-        if(parentCalibrationData.Count > 0)
-        {
-            float displacement = 0;
-            RaycastHit h1;
-            if (Physics.Raycast(animator.GetBoneTransform(HumanBodyBones.LeftFoot).position, Vector3.down, out h1, 100f, ground, QueryTriggerInteraction.Ignore)){
-                displacement = (h1.point - animator.GetBoneTransform(HumanBodyBones.LeftFoot).position).y;
-            }
-            if (Physics.Raycast(animator.GetBoneTransform(HumanBodyBones.RightFoot).position, Vector3.down, out h1, 100f, ground, QueryTriggerInteraction.Ignore)){
-                float displacement2 = (h1.point - animator.GetBoneTransform(HumanBodyBones.RightFoot).position).y;
-                if (Mathf.Abs(displacement2) < Mathf.Abs(displacement))
-                {
-                    displacement = displacement2;
-                }
-            }
-            transform.position = Vector3.Lerp(transform.position,initialPosition+ Vector3.up * displacement + Vector3.up * footGroundOffset,
-                Time.deltaTime*5f);
-        }
+        // 루트 위치/회전은 고정
+        transform.position = initialPosition;
+        transform.rotation = initialRotation;
 
-        // Compute the new rotations for each limbs of the avatar using the calibration datas we created before.
-        foreach(var i in parentCalibrationData)
+        // 팔/상체만 포즈 적용
+        if (parentCalibrationData.Count > 0)
         {
-            Quaternion deltaRotTracked = Quaternion.FromToRotation(i.Value.initialDir, i.Value.CurrentDirection);
-            i.Value.parent.rotation = deltaRotTracked * i.Value.initialRotation;
-        }
+            foreach (var i in parentCalibrationData)
+            {
+                Quaternion deltaRotTracked = Quaternion.FromToRotation(i.Value.initialDir, i.Value.CurrentDirection);
+                i.Value.parent.rotation = deltaRotTracked * i.Value.initialRotation;
+            }
 
-        // Deal with spine chain as a special case.
-        if(parentCalibrationData.Count > 0)
-        {
+            // 척추/머리 부드럽게
             Vector3 hd = head.CurrentDirection;
-            // Some are partial rotations which we can stack together to specify how much we should rotate.
             Quaternion headr = Quaternion.FromToRotation(head.initialDir, hd);
-            Quaternion twist = Quaternion.FromToRotation(hipsTwist.initialDir, 
-                Vector3.Slerp(hipsTwist.initialDir,hipsTwist.CurrentDirection,.25f));
             Quaternion updown = Quaternion.FromToRotation(spineUpDown.initialDir,
                 Vector3.Slerp(spineUpDown.initialDir, spineUpDown.CurrentDirection, .25f));
 
-            // Compute the final rotations.
-            Quaternion h = updown * updown * updown * twist * twist;
-            Quaternion s = h * twist * updown;
-            Quaternion c = s * twist * twist;
             float speed = 10f;
-            hipsTwist.Tick(h * hipsTwist.initialRotation, speed);
-            spineUpDown.Tick(s * spineUpDown.initialRotation, speed);
-            chest.Tick(c * chest.initialRotation, speed);
-            head.Tick(updown * twist * headr * head.initialRotation, speed);
-
-            // For additional responsiveness, we rotate the entire transform slightly based on the hips.
-            Vector3 d = Vector3.Slerp(hipsTwist.initialDir, hipsTwist.CurrentDirection, .25f);
-            d.y *= 0.5f;
-            Quaternion deltaRotTracked = Quaternion.FromToRotation(hipsTwist.initialDir, d);
-            targetRot= deltaRotTracked * initialRotation;
-            transform.rotation = Quaternion.Lerp(transform.rotation, targetRot, Time.deltaTime * speed);
-
+            spineUpDown.Tick(updown * spineUpDown.initialRotation, speed);
+            chest.Tick(updown * chest.initialRotation, speed);
+            head.Tick(updown * headr * head.initialRotation, speed);
         }
-
     }
 
+    private void LateUpdate()
+    {
+        // 마지막에 하체를 강제로 초기 포즈로 되돌려 고정
+        for (int i = 0; i < lowerLocks.Count; i++)
+        {
+            if (lowerLocks[i].t == null) continue;
+            lowerLocks[i].t.localPosition = lowerLocks[i].localPos;
+            lowerLocks[i].t.localRotation = lowerLocks[i].localRot;
+        }
+    }
 }

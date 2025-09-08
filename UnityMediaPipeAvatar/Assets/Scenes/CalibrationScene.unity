@@ -408,11 +408,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   previewCamera: {fileID: 963194227}
   animator: {fileID: 381108389}
-  ground:
-    serializedVersion: 2
-    m_Bits: 256
-  footTracking: 1
-  footGroundOffset: 0.1
   useCalibrationData: 1
   calibrationData: {fileID: 11400000, guid: f6d63504f6eba7e4095f0c5ae1186221, type: 2}
 --- !u!95 &381108389 stripped
